@@ -27,7 +27,7 @@ import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
-import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
+import { normalizeSessionSource, partitionKanbanWorkerSessions, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $cronJobs } from '@/store/cron'
 import {
@@ -36,6 +36,7 @@ import {
   $pinnedSessionIds,
   $sidebarAgentsGrouped,
   $sidebarCronOpen,
+  $sidebarKanbanOpen,
   $sidebarMessagingOpenIds,
   $sidebarPinsOpen,
   $sidebarProjectOrderIds,
@@ -49,6 +50,7 @@ import {
   setPinnedSessionOrder,
   setSidebarAgentsGrouped,
   setSidebarCronOpen,
+  setSidebarKanbanOpen,
   setSidebarPinsOpen,
   setSidebarProjectOrderIds,
   setSidebarRecentsOpen,
@@ -276,6 +278,7 @@ export function ChatSidebar({
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
   const cronOpen = useStore($sidebarCronOpen)
+  const kanbanOpen = useStore($sidebarKanbanOpen)
   // The sidebar highlight tracks the FOCUSED session — the interacted tile's
   // tab, else the main selection — so it stays 1:1 with whatever tab is active.
   const selectedSessionId = useStore($focusedStoredSessionId)
@@ -478,9 +481,14 @@ export function ChatSidebar({
     return [...out.values()]
   }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
 
-  const unpinnedAgentSessions = useMemo(
+  const unpinnedSessions = useMemo(
     () => sortedSessions.filter(s => !pinnedRealIdSet.has(s.id)),
     [sortedSessions, pinnedRealIdSet]
+  )
+
+  const { conversations: unpinnedAgentSessions, kanbanRuns: kanbanWorkerSessions } = useMemo(
+    () => partitionKanbanWorkerSessions(unpinnedSessions),
+    [unpinnedSessions]
   )
 
   useEffect(() => {
@@ -932,8 +940,8 @@ export function ChatSidebar({
     sessionProfileTotals
   ])
 
-  // The flat Sessions list always shows ALL recent sessions; Projects is a
-  // parallel grouped view, not a filter on this one — nothing is hidden here.
+  // Machine-generated Kanban transcripts remain fully accessible in their own
+  // section instead of consuming the user's ordinary conversation history.
   const displayAgentSessions = agentSessions
 
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
@@ -952,7 +960,8 @@ export function ChatSidebar({
 
   const hasMoreSessions = knownSessionTotal > loadedSessionCount
 
-  const recentsMeta = countLabel(displayAgentSessions.length, knownSessionTotal)
+  const knownConversationTotal = Math.max(displayAgentSessions.length, knownSessionTotal - kanbanWorkerSessions.length)
+  const recentsMeta = countLabel(displayAgentSessions.length, knownConversationTotal)
   const displayRecentsCountRef = useRef(0)
   const loadedRecentsCountRef = useRef(0)
   displayRecentsCountRef.current = displayAgentSessions.length
@@ -1386,6 +1395,28 @@ export function ChatSidebar({
                 )}
                 sessions={displayAgentSessions}
                 sortable={!showAllProfiles && agentSessions.length > 1}
+                workingSessionIdSet={workingSessionIdSet}
+              />
+            )}
+
+            {!trimmedQuery && !worktreeGroupingActive && kanbanWorkerSessions.length > 0 && (
+              <SidebarSessionsSection
+                activeSessionId={activeSidebarSessionId}
+                contentClassName={cn('flex max-h-56 flex-col gap-px pb-1.75', GROUP_BODY)}
+                emptyState={null}
+                label={sessionSourceLabel('kanban') ?? 'Kanban Runs'}
+                labelIcon={<Codicon name="robot" size="0.75rem" />}
+                labelMeta={String(kanbanWorkerSessions.length)}
+                onArchiveSession={onArchiveSession}
+                onBranchSession={onBranchSession}
+                onDeleteSession={onDeleteSession}
+                onResumeSession={onResumeSession}
+                onToggle={() => setSidebarKanbanOpen(!kanbanOpen)}
+                onTogglePin={pinSession}
+                open={kanbanOpen}
+                pinned={false}
+                rootClassName="shrink-0 p-0"
+                sessions={kanbanWorkerSessions}
                 workingSessionIdSet={workingSessionIdSet}
               />
             )}

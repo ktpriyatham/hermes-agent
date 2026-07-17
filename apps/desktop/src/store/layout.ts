@@ -22,6 +22,7 @@ export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
 const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
+const SIDEBAR_KANBAN_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarKanbanOpen'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
 const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
 const SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY = 'hermes.desktop.sessionOrder.manual'
@@ -126,6 +127,9 @@ export const $sidebarRecentsOpen = atom(true)
 // default (it only renders at all when cron sessions exist) so the
 // scheduler's `[IMPORTANT: …]` first-message previews don't spam recents.
 export const $sidebarCronOpen = persistentAtom(SIDEBAR_CRON_OPEN_STORAGE_KEY, false, Codecs.bool)
+// Dispatcher execution transcripts are available but collapsed by default so
+// machine runs do not displace normal conversation history.
+export const $sidebarKanbanOpen = persistentAtom(SIDEBAR_KANBAN_OPEN_STORAGE_KEY, false, Codecs.bool)
 // Messaging platform sections collapse by default (they can be numerous and
 // tall). We persist the ids the user has *explicitly expanded*, so the default
 // stays collapsed unless they've opened a platform before.
@@ -258,6 +262,10 @@ export function setSidebarRecentsOpen(open: boolean) {
 
 export function setSidebarCronOpen(open: boolean) {
   $sidebarCronOpen.set(open)
+}
+
+export function setSidebarKanbanOpen(open: boolean) {
+  $sidebarKanbanOpen.set(open)
 }
 
 export function toggleSidebarMessagingOpen(sourceId: string) {

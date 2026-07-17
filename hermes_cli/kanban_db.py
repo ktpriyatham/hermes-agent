@@ -8105,6 +8105,10 @@ def _default_spawn(
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
+    # Keep machine-generated execution transcripts distinct from user chats.
+    # Desktop groups this source under a collapsed "Kanban Runs" section while
+    # preserving every transcript and allowing it to be opened from the board.
+    env["HERMES_SESSION_SOURCE"] = "kanban"
     env["HERMES_KANBAN_WORKSPACE"] = workspace
     # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and
     # context-file loader anchor on the workspace, not whatever cwd the

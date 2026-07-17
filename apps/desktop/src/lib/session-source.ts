@@ -9,6 +9,7 @@ const SOURCE_LABELS: Record<string, string> = {
   discord: 'Discord',
   email: 'Email',
   gateway: 'Gateway',
+  kanban: 'Kanban Runs',
   local: 'Local',
   matrix: 'Matrix',
   mattermost: 'Mattermost',
@@ -40,7 +41,7 @@ const SOURCE_ALIASES: Record<string, string[]> = {
 // platform. A handoff *from* one of these isn't a platform origin worth a badge.
 // Exported so the recents fetch can keep these in the main list while the
 // messaging fetch excludes them.
-export const LOCAL_SESSION_SOURCE_IDS = ['cli', 'codex', 'desktop', 'gateway', 'local', 'tui']
+export const LOCAL_SESSION_SOURCE_IDS = ['cli', 'codex', 'desktop', 'gateway', 'kanban', 'local', 'tui']
 const LOCAL_SOURCE_IDS = new Set(LOCAL_SESSION_SOURCE_IDS)
 
 // External messaging platforms that each get their own self-managed sidebar
@@ -75,6 +76,46 @@ export function isMessagingSource(source: null | string | undefined): boolean {
   const id = normalizeSessionSource(source)
 
   return id != null && MESSAGING_SOURCE_IDS.has(id)
+}
+
+interface KanbanWorkerSessionLike {
+  preview?: null | string
+  source?: null | string
+  title?: null | string
+}
+
+const KANBAN_WORKER_PROMPT = /^work kanban task t_[a-z0-9]+$/i
+
+/** True for dispatcher execution transcripts, not user-authored Kanban chats.
+ *
+ * New workers carry the dedicated `kanban` source. The exact prompt fallback
+ * categorizes sessions created before that source existed without rewriting,
+ * archiving, or otherwise mutating their stored history.
+ */
+export function isKanbanWorkerSession(session: KanbanWorkerSessionLike): boolean {
+  if (normalizeSessionSource(session.source) === 'kanban') {
+    return true
+  }
+
+  return [session.title, session.preview].some(value => KANBAN_WORKER_PROMPT.test(value?.trim() ?? ''))
+}
+
+export function partitionKanbanWorkerSessions<T extends KanbanWorkerSessionLike>(sessions: readonly T[]): {
+  conversations: T[]
+  kanbanRuns: T[]
+} {
+  const conversations: T[] = []
+  const kanbanRuns: T[] = []
+
+  for (const session of sessions) {
+    if (isKanbanWorkerSession(session)) {
+      kanbanRuns.push(session)
+    } else {
+      conversations.push(session)
+    }
+  }
+
+  return { conversations, kanbanRuns }
 }
 
 export function normalizeSessionSource(source: null | string | undefined): string | null {
