@@ -9,10 +9,15 @@
  *     "schemaVersion": 1,
  *     "commit":        "<40-char SHA>",
  *     "branch":        "<branch name>",
+ *     "repo":          "<clone URL of the build's origin remote, or null>",
  *     "builtAt":       "<ISO 8601 UTC timestamp>",
  *     "dirty":         true|false,
  *     "source":        "ci" | "local"
  *   }
+ *
+ * `repo` exists so a desktop app built from a fork bootstraps against that
+ * fork: without it, install.sh clones NousResearch/hermes-agent and a
+ * fork-only branch pin fails with "Remote branch not found in upstream".
  *
  * Source preference order:
  *   1. CI env vars ($GITHUB_SHA / $GITHUB_REF_NAME) -- avoid edge cases with
@@ -43,13 +48,25 @@ function tryExec(cmd, opts) {
   }
 }
 
+// Normalize a git remote URL to its canonical HTTPS clone form so the
+// bootstrap can derive both a raw-content URL and an SSH fallback from it.
+// Non-GitHub remotes pass through untouched; missing remotes stamp null.
+function canonicalRepoUrl(url) {
+  if (!url) return null
+  const m = url.match(/^git@github\.com:(.+?)(\.git)?$/)
+  if (m) return `https://github.com/${m[1]}.git`
+  return url
+}
+
 function fromCI() {
   const sha = process.env.GITHUB_SHA
   if (!sha) return null
   const branch = process.env.GITHUB_REF_NAME || process.env.GITHUB_HEAD_REF || null
+  const repoSlug = process.env.GITHUB_REPOSITORY || null
   return {
     commit: sha,
     branch: branch,
+    repo: repoSlug ? `https://github.com/${repoSlug}.git` : null,
     dirty: false, // CI builds from a checkout-of-ref by definition
     source: "ci"
   }
@@ -70,6 +87,7 @@ function fromLocalGit() {
   return {
     commit: sha,
     branch: branch === "HEAD" ? null : branch, // detached HEAD -> null
+    repo: canonicalRepoUrl(tryExec("git config --get remote.origin.url", { cwd: REPO_ROOT })),
     dirty: dirty,
     source: "local"
   }
@@ -104,6 +122,7 @@ function main() {
     schemaVersion: STAMP_SCHEMA_VERSION,
     commit: stamp.commit,
     branch: stamp.branch,
+    repo: stamp.repo ?? null,
     builtAt: new Date().toISOString(),
     dirty: stamp.dirty,
     source: stamp.source

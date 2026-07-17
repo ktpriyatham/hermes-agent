@@ -119,12 +119,26 @@ function cachedScriptPath(hermesHome, commit) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${commit}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
 
-function downloadInstallScript(commit, destPath) {
+const DEFAULT_REPO_SLUG = 'NousResearch/hermes-agent'
+
+// "owner/name" from a GitHub clone URL (SSH or HTTPS), else null. Fork-built
+// apps stamp their origin so the bootstrap fetches/clones from that fork.
+function repoSlugFromUrl(url) {
+  if (!url) {
+    return null
+  }
+
+  const m = String(url).match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\/?$/)
+
+  return m ? m[1] : null
+}
+
+function downloadInstallScript(commit, destPath, repoSlug = DEFAULT_REPO_SLUG) {
   // Fetch from GitHub raw at the pinned commit. The raw URL with a SHA
   // is immutable (unlike a branch ref), so we don't need integrity
   // verification beyond "did the file we wrote pass a syntax probe."
   const scriptName = installScriptName()
-  const url = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${commit}/scripts/${scriptName}`
+  const url = `https://raw.githubusercontent.com/${repoSlug}/${commit}/scripts/${scriptName}`
 
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(destPath), { recursive: true })
@@ -251,7 +265,7 @@ async function resolveInstallScript({
   })
 
   try {
-    await _download(installStamp.commit, cached)
+    await _download(installStamp.commit, cached, repoSlugFromUrl(installStamp.repo) || DEFAULT_REPO_SLUG)
     emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
 
     return { path: cached, source: 'download', commit: installStamp.commit, kind: installScriptKind() }
@@ -564,6 +578,12 @@ function buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit = t
 
   if (installStamp && installStamp.branch) {
     args.push('--branch', installStamp.branch)
+  }
+
+  // Fork-built apps must clone from the fork that has their pinned branch.
+  // (install.ps1 has no -Repo yet, so this stays posix-only.)
+  if (installStamp && installStamp.repo) {
+    args.push('--repo', installStamp.repo)
   }
 
   if (pinCommit && installStamp && installStamp.commit) {

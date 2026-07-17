@@ -45,6 +45,9 @@ BOLD='\033[1m'
 # Configuration
 REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
 REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
+# --repo overrides both URLs (fork/mirror installs); tracked so the update
+# path can repoint an existing checkout's origin at the override.
+REPO_OVERRIDDEN=false
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 # INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
 # FHS-style layout for root installs.  Track whether the user gave us an
@@ -113,6 +116,27 @@ while [[ $# -gt 0 ]]; do
             BRANCH="$2"
             shift 2
             ;;
+        --repo|-Repo)
+            # Install from a fork or mirror. Accepts an SSH or HTTPS GitHub
+            # URL and derives the other form so the SSH-then-HTTPS clone
+            # fallback keeps working; non-GitHub URLs are used verbatim.
+            case "$2" in
+                git@github.com:*)
+                    REPO_URL_SSH="$2"
+                    REPO_URL_HTTPS="https://github.com/${2#git@github.com:}"
+                    ;;
+                https://github.com/*)
+                    REPO_URL_HTTPS="$2"
+                    REPO_URL_SSH="git@github.com:${2#https://github.com/}"
+                    ;;
+                *)
+                    REPO_URL_SSH="$2"
+                    REPO_URL_HTTPS="$2"
+                    ;;
+            esac
+            REPO_OVERRIDDEN=true
+            shift 2
+            ;;
         --commit|-Commit)
             INSTALL_COMMIT="$2"
             shift 2
@@ -167,6 +191,8 @@ while [[ $# -gt 0 ]]; do
             echo "                   write \$HERMES_HOME/.no-bundled-skills so future"
             echo "                   'hermes update' runs never inject bundled skills either"
             echo "  --branch NAME  Git branch to install (default: main)"
+            echo "  --repo URL     Git repo to install from (fork/mirror; SSH or"
+            echo "                   HTTPS GitHub URL — the other form is derived)"
             echo "  --commit SHA   Pin checkout to a specific commit after clone/update"
             echo "  --manifest     Print desktop bootstrap stage manifest as JSON"
             echo "  --stage NAME   Run one desktop bootstrap stage"
@@ -1213,6 +1239,16 @@ clone_repo() {
                 log_info "Local changes detected, stashing before update..."
                 git stash push --include-untracked -m "$stash_name"
                 autostash_ref="stash@{0}"
+            fi
+
+            # An explicit --repo must also win on the update/repair path, or a
+            # checkout created from the wrong remote can never be recovered.
+            if [ "$REPO_OVERRIDDEN" = true ]; then
+                current_origin=$(git remote get-url origin 2>/dev/null || echo "")
+                if [ "$current_origin" != "$REPO_URL_HTTPS" ] && [ "$current_origin" != "$REPO_URL_SSH" ]; then
+                    log_info "Repointing origin at $REPO_URL_HTTPS (--repo override)..."
+                    git remote set-url origin "$REPO_URL_HTTPS"
+                fi
             fi
 
             # Fetch only the target branch. A bare `git fetch origin` pulls
