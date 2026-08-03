@@ -17,11 +17,75 @@ import os
 import html as _html
 import re
 import threading
+import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Connection-attempt governor  (bot-ban protection)
+# ---------------------------------------------------------------------------
+# Telegram flood-bans a BOT ID (not just a token) when it is hammered with
+# connection attempts. We lost @neo_me_bot to exactly that on 2026-08-02: three
+# retry layers multiply — the gateway reconnect loop (every <=300s, forever)
+# each drives this adapter's connect loop (8 attempts, backoff capped at a mere
+# 15s), plus the polling network-error loop (10 attempts). Steady state was
+# ~96 connect attempts/hour, and after several hours Telegram stopped answering
+# for that bot id entirely (every secret for it hung; other bot ids answered
+# instantly).
+#
+# No single retry loop can see the others, so the ceiling has to live OUTSIDE
+# all of them: a process-wide rolling-window limiter that every connect attempt
+# must pass through. When the hourly budget is spent the caller WAITS instead of
+# hitting the API — the loops keep their own logic, but they can no longer
+# aggregate into a ban.
+_CONNECT_ATTEMPT_LOG: Dict[str, List[float]] = {}
+_CONNECT_ATTEMPT_LOCK = threading.Lock()
+_CONNECT_WINDOW_SECONDS = 3600.0
+# Per-attempt backoff ceiling inside the connect loop. Was a hardcoded 15s,
+# which let 8 attempts finish in ~75s and then repeat on every gateway
+# reconnect. 60s spreads the same attempts over ~4 minutes.
+_CONNECT_BACKOFF_CAP = 60
+
+
+def _max_connects_per_hour() -> int:
+    """Hourly ceiling on Telegram connection attempts (0 disables the governor)."""
+    try:
+        return int(os.getenv("HERMES_TELEGRAM_MAX_CONNECTS_PER_HOUR", "12"))
+    except (TypeError, ValueError):
+        return 12
+
+
+async def _govern_connect_attempt(name: str) -> None:
+    """Block until this adapter is allowed another Telegram connection attempt.
+
+    Rolling 1-hour window, shared across every retry layer in the process.
+    Sleeps (rather than raising) so existing reconnect logic is unchanged —
+    it simply cannot exceed the budget.
+    """
+    budget = _max_connects_per_hour()
+    if budget <= 0:
+        return
+
+    while True:
+        now = time.monotonic()
+        with _CONNECT_ATTEMPT_LOCK:
+            attempts = [t for t in _CONNECT_ATTEMPT_LOG.get(name, []) if now - t < _CONNECT_WINDOW_SECONDS]
+            _CONNECT_ATTEMPT_LOG[name] = attempts
+            if len(attempts) < budget:
+                attempts.append(now)
+                return
+            # Budget spent — wait until the oldest attempt ages out.
+            wait = _CONNECT_WINDOW_SECONDS - (now - attempts[0]) + 1.0
+        logger.warning(
+            "[%s] Connection governor: %d/%d attempts used this hour — pausing %.0fs "
+            "before the next one (protects the bot from a Telegram flood-ban).",
+            name, len(attempts), budget, wait,
+        )
+        await asyncio.sleep(max(wait, 1.0))
 
 
 def _redact_telegram_error_text(error: object) -> str:
@@ -3464,6 +3528,11 @@ class TelegramAdapter(BasePlatformAdapter):
             _init_timeout = _env_float("HERMES_TELEGRAM_INIT_TIMEOUT", 30.0)
             for _attempt in range(_max_connect):
                 try:
+                    # Hard ceiling shared by every retry layer in this process.
+                    # Waits here rather than hitting the API when the hourly
+                    # budget is spent — this is what stops nested reconnect
+                    # loops from aggregating into a bot-level flood-ban.
+                    await _govern_connect_attempt(self.name)
                     logger.warning(
                         "[%s] Connecting to Telegram (attempt %d/%d)…",
                         self.name, _attempt + 1, _max_connect,
@@ -3482,7 +3551,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     break
                 except asyncio.TimeoutError:
                     if _attempt < _max_connect - 1:
-                        wait = min(2 ** _attempt, 15)
+                        wait = min(2 ** _attempt, _CONNECT_BACKOFF_CAP)
                         logger.warning(
                             "[%s] Connect attempt %d/%d timed out after %.0fs — retrying in %ds",
                             self.name, _attempt + 1, _max_connect, _init_timeout, wait,
@@ -3496,7 +3565,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         )
                 except OSError as init_err:
                     if _attempt < _max_connect - 1:
-                        wait = min(2 ** _attempt, 15)
+                        wait = min(2 ** _attempt, _CONNECT_BACKOFF_CAP)
                         logger.warning(
                             "[%s] Connect attempt %d/%d failed: %s — retrying in %ds",
                             self.name, _attempt + 1, _max_connect, init_err, wait,
@@ -3508,7 +3577,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     if not self._looks_like_network_error(init_err):
                         raise
                     if _attempt < _max_connect - 1:
-                        wait = min(2 ** _attempt, 15)
+                        wait = min(2 ** _attempt, _CONNECT_BACKOFF_CAP)
                         logger.warning(
                             "[%s] Connect attempt %d/%d failed: %s — retrying in %ds",
                             self.name, _attempt + 1, _max_connect, init_err, wait,
