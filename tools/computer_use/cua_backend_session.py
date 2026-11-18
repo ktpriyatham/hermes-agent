@@ -387,10 +387,22 @@ class _CuaDriverSession:
     @staticmethod
     def _is_closed_session_error(exc: Exception) -> bool:
         """True for MCP/stdio failures that are recoverable by reconnecting."""
-        name, module = exc.__class__.__name__, getattr(exc.__class__, "__module__", "")
-        return (name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
-                or (module.startswith("anyio") and "Resource" in name)
-                or isinstance(exc, (BrokenPipeError, EOFError)))
+        # SDK 2.x uses MCPError; 1.x used McpError. Both carry ErrorData.
+        # -32000 is also an application/server error code: require the SDK's
+        # exact closure message, not a code-only or substring match.
+        with contextlib.suppress(ImportError):
+            from mcp.shared import exceptions as mcp_exceptions
+            for error_name in ("MCPError", "McpError"):
+                error_type = getattr(mcp_exceptions, error_name, None)
+                if error_type is not None and isinstance(exc, error_type):
+                    error = getattr(exc, "error", None)
+                    return (getattr(error, "code", None) == -32000
+                            and getattr(error, "message", None) == "Connection closed")
+        with contextlib.suppress(ImportError):
+            from anyio import BrokenResourceError, ClosedResourceError, EndOfStream
+            if isinstance(exc, (BrokenResourceError, ClosedResourceError, EndOfStream)):
+                return True
+        return isinstance(exc, (BrokenPipeError, EOFError))
 
     @staticmethod
     def _is_transient_daemon_error(exc: Exception) -> bool:
