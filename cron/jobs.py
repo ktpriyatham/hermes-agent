@@ -2305,7 +2305,11 @@ def rearm_oneshot(job_id: str, run_at: Any) -> Optional[dict[str, Any]]:
 
 
 def remove_job(job_id: str) -> bool:
-    """Remove a job by ID or name."""
+    """Remove a job by ID or name, requesting cancellation before deleting its schedule.
+
+    A cancellation lookup/write failure leaves the schedule intact. True confirms removal,
+    not that an in-flight worker has acknowledged the cancellation; output cleanup is best-effort.
+    """
     job = resolve_job_ref(job_id)
     if not job:
         return False
@@ -2318,14 +2322,21 @@ def remove_job(job_id: str) -> bool:
             return False
         # Resolve BEFORE saving so a legacy unsafe ID fails closed without a half-applied removal.
         job_output_dir = _job_output_dir(canonical_id)
-        save_jobs(jobs, removed_ids={canonical_id})
         marker = _self_removal_delivery.get()
-        if marker is not None and marker.job_id == canonical_id:
-            marker.removed = True
-        else:  # someone else removed it: its live run must stop, not burn tokens to a discard
+        self_removal = marker is not None and marker.job_id == canonical_id
+        if not self_removal:
+            # Fail before deleting if the ledger or cancel-marker write is unavailable. Keep
+            # the jobs lock across cancellation and save so another fire cannot claim between.
             cancel_job_run(canonical_id, reason="job removed while running")
-        if job_output_dir.exists():
-            shutil.rmtree(job_output_dir)
+        save_jobs(jobs, removed_ids={canonical_id})
+        if self_removal and marker is not None:
+            marker.removed = True
+        try:
+            if job_output_dir.exists():
+                shutil.rmtree(job_output_dir)
+        except OSError:
+            # The schedule is already gone; leftover output is not a failed removal.
+            logger.warning("Job %s removed, but output cleanup failed", canonical_id, exc_info=True)
         try:
             from cron.notepad import clear_notepad
             clear_notepad(canonical_id)
